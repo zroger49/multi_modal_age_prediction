@@ -1,0 +1,499 @@
+---
+title: "02_plot_sample_size"
+output: html_document
+date: "2023-01-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+```
+
+
+```{r}
+merged.metadata <- read.csv(file = "../../metadata/metadata.epic.noPEER.csv")
+write.csv(merged.metadata, file = "epic_array_sample.csv", quote = F, row.names = F)
+```
+
+Base path (automatically updates the obsidian.rmd file)
+```{r}
+#NOTE: Replace this path when running this script in another machine
+base_path <- "../../aging_notes/figures/1.general_data_exploration/"
+```
+
+# Methylation
+
+## Plot number of samples per tissue 
+
+```{r}
+merged.metadata.samples_per_tissue <- merged.metadata %>% 
+  group_by(tissue ) %>% 
+  summarise(n_sample = n()) %>% 
+  arrange(n_sample) %>% 
+  mutate(tissue = factor(tissue, levels = tissue))
+
+barplot_sample_size <- ggplot(merged.metadata.samples_per_tissue, aes(x = tissue, y = n_sample)) + 
+  geom_bar(stat = "identity", fill = "grey70") +
+  geom_text(aes(label = n_sample), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type", 
+          subtitle = "DNA Methylation") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(merged.metadata.samples_per_tissue$n_sample) + 40))
+
+print(barplot_sample_size)
+
+```
+
+Save the plot 
+
+```{r}
+png(paste0(base_path, "barplot_sample_size_per_tissue.png"), res = 300, h = 1200, w = 2000)
+barplot_sample_size
+dev.off()
+```
+
+
+## Plot age distribution per tissue on the top 4 tissue
+
+Barplot
+
+```{r fig.height=10, paged.print=TRUE}
+age_dist_barplot <- merged.metadata %>% 
+  ggplot(aes(x = AGE)) + 
+  geom_histogram(fill = "grey40", alpha = 0.5, bins = 50) + #50 bins
+  xlab("Age") + ylab("Frequency") + 
+  ggtitle("Age Distribution per Tissue Type") +
+  theme_classic() +
+  facet_wrap(~ tissue, ncol = 2, scales = "free_y") + 
+  theme( strip.text = element_text(size=16))
+
+print(age_dist_barplot)
+```
+
+```{r}
+png(paste0(base_path, "barplot_age_dist_tissue.png"), res = 300, h = 2000, w = 3000)
+age_dist_barplot
+dev.off()
+```
+
+
+AGE & Sex distribution (to search for confounding effects)
+
+```{r fig.height=10, fig.width=15}
+age_x_sex_dist <- merged.metadata %>% 
+  mutate(AGE_binary = ifelse(AGE > 50, "Old", "Young")) %>% 
+  group_by(tissue, SEX, AGE_binary) %>% 
+  summarise(n_samples = n()) %>% 
+  mutate(SEX = as.factor(SEX)) %>%
+  ggplot(aes(x = AGE_binary, y = n_samples, fill = SEX)) + 
+    geom_bar(stat = "identity", position = "stack") +
+    xlab("Age") + ylab("Number of Samples") + 
+    ggtitle("Number of Samples by Age and Sex") +
+    theme_classic() +
+    scale_fill_manual(values = c("#FF69B4", "#ADD8E6"), name = "SEX")  + 
+    facet_wrap(~ tissue, ncol = 2, scales = "free_y") + 
+    theme( strip.text = element_text(size=16))
+
+print(age_x_sex_dist)
+```
+
+
+```{r}
+png(paste0(base_path, "barplot_age_x_sex_dist_tissue.png"), res = 300, h = 2000, w = 3000)
+age_x_sex_dist
+dev.off()
+```
+
+# Gene expression
+
+Load data
+```{r}
+gene_expression_samples <- readRDS(file = "../../metadata/GTExSampleData.RDS")
+```
+
+
+### Plot number of samples per tissue 
+
+```{r fig.height=10}
+expression.n_samples_per_tissue <- gene_expression_samples %>% 
+  group_by(SMTSDNOSPACE) %>% 
+  summarise(n_sample = n()) %>% 
+  arrange(n_sample) %>% 
+  mutate(tissue = factor(SMTSDNOSPACE, levels = SMTSDNOSPACE)) %>% 
+  select(-SMTSDNOSPACE)
+
+barplot_sample_size_exp <- ggplot(expression.n_samples_per_tissue, aes(x = tissue, y = n_sample)) + 
+  geom_bar(stat = "identity", fill = "grey70") +
+  geom_text(aes(label = n_sample), hjust = -0.5, color = "black", size = 4) +
+  xlab("Tissue") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type (expression)") +
+  theme_classic() + 
+  coord_flip() + ylim(c(0, max(expression.n_samples_per_tissue$n_sample) + 20)) + xlab("")
+
+print(barplot_sample_size_exp)
+
+```
+```{r}
+tissues_to_keep <- gsub("\\s", "", merged.metadata$tissue)
+
+expression.n_samples_per_tissue_filtered <- expression.n_samples_per_tissue %>% 
+  filter(tissue %in% tissues_to_keep)
+
+barplot_sample_size_exp_filtered <- ggplot(expression.n_samples_per_tissue_filtered, aes(x = tissue, y = n_sample)) + 
+  geom_bar(stat = "identity", fill = "grey73") +
+  geom_text(aes(label = n_sample), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type (expression)", 
+          subtitle = "RNA Expression") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(expression.n_samples_per_tissue_filtered$n_sample) + 100))
+
+
+print(barplot_sample_size_exp_filtered)
+```
+
+
+
+Save the plot 
+```{r}
+png(paste0(base_path, "barplot_sample_size_per_tissue_expression_filtered.png"), res = 300,  h = 1200, w = 2000)
+barplot_sample_size_exp_filtered
+dev.off()
+```
+
+## Plot age distribution per tissue on the top 4 tissue
+
+Barplot
+
+```{r fig.height=10, paged.print=TRUE}
+age_dist_barplot_gene_exp <- gene_expression_samples %>% 
+  filter(SMTSDNOSPACE %in% tissues_to_keep) %>%
+  ggplot(aes(x = AGE)) + 
+  geom_histogram(fill = "grey40", alpha = 0.5, bins = 50) +
+  xlab("Age") + ylab("Frequency") + 
+  ggtitle("Age Distribution per Tissue Type") +
+  theme_classic() +
+  facet_wrap(~ SMTSDNOSPACE, ncol = 2, scales = "free_y") + 
+  theme( strip.text = element_text(size=16))
+
+print(age_dist_barplot_gene_exp)
+```
+
+
+```{r}
+png(paste0(base_path, "barplot_age_dist_tissue_gene_expression.png"), res = 300, h = 2000, w = 3000)
+age_dist_barplot_gene_exp
+dev.off()
+```
+
+
+AGE & Sex distribution (to search for confounding effects)
+
+```{r fig.height=10, fig.width=15}
+age_x_sex_dist_gene_expression <- gene_expression_samples %>%
+  filter(SMTSDNOSPACE %in% tissues_to_keep) %>%
+  mutate(AGE_binary = ifelse(AGE > 50, "Old", "Young")) %>% 
+  group_by(SMTSDNOSPACE, SEX, AGE_binary) %>% 
+  summarise(n_samples = n()) %>% 
+  mutate(SEX = as.factor(SEX)) %>%
+  ggplot(aes(x = AGE_binary, y = n_samples, fill = SEX)) + 
+    geom_bar(stat = "identity", position = "stack") +
+    xlab("Age") + ylab("Number of Samples") + 
+    ggtitle("Number of Samples by Age and Sex") +
+    theme_classic() +
+    scale_fill_manual(values = c("#FF69B4", "#ADD8E6"), name = "SEX")  + 
+    facet_wrap(~ SMTSDNOSPACE, ncol = 2, scales = "free_y") + 
+    theme( strip.text = element_text(size=16))
+
+print(age_x_sex_dist_gene_expression)
+```
+
+
+```{r}
+png(paste0(base_path, "barplot_age_x_sex_dist_tissue_gene_expression.png"), res = 300, h = 2000, w = 3000)
+age_x_sex_dist_gene_expression
+dev.off()
+```
+# Telemores data
+
+```{r}
+data_telemores <- read.csv("../../data/telemores_data.csv")
+
+data_telemores.per_tissue_samples <- data_telemores %>% 
+  group_by(TissueSiteDetail) %>% 
+  reframe(n_samples = n()) %>% 
+  arrange(n_samples)
+
+data_telemores.per_tissue_samples$TissueSiteDetail <- factor(data_telemores.per_tissue_samples$TissueSiteDetail, levels = data_telemores.per_tissue_samples$TissueSiteDetail)
+
+
+barplot_sample_size_telemores <- ggplot(data_telemores.per_tissue_samples, aes(x = TissueSiteDetail, y = n_samples)) + 
+  geom_bar(stat = "identity", fill = "grey73") +
+  geom_text(aes(label = n_samples), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type (expression)", 
+          subtitle = "Telemores data") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_telemores.per_tissue_samples$n_samples) + 100))
+
+
+print(barplot_sample_size_telemores)
+
+```
+
+```{r}
+data_telemores.per_tissue_samples.filtered <- data_telemores.per_tissue_samples %>% 
+  mutate(TissueSiteDetail = gsub(" - ", "-", TissueSiteDetail)) %>%
+  filter(TissueSiteDetail %in% expression.n_samples_per_tissue_filtered$tissue)
+
+data_telemores.per_tissue_samples.filtered$TissueSiteDetail <- factor(data_telemores.per_tissue_samples.filtered$TissueSiteDetail, levels = data_telemores.per_tissue_samples.filtered$TissueSiteDetail)
+
+
+barplot_sample_size_telemores.filtered <- ggplot(data_telemores.per_tissue_samples.filtered, aes(x = TissueSiteDetail, y = n_samples)) + 
+  geom_bar(stat = "identity", fill = "grey73") +
+  geom_text(aes(label = n_samples), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type (expression)", 
+          subtitle = "Telemores data") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_telemores.per_tissue_samples$n_samples) + 100))
+
+
+print(barplot_sample_size_telemores.filtered)
+```
+
+```{r}
+png(paste0(base_path, "barplot_sample_size_per_tissue_tl_filtered.png"), res = 300, h = 2000, w = 3000)
+barplot_sample_size_telemores.filtered
+dev.off()
+```
+
+
+# Histology Samples
+
+```{r}
+data_multi_omics <- read.csv(file = "../../metadata/sample_ids_multiomics_updated_tl_data.csv")
+
+data_multi_omics.histology <- data_multi_omics %>% 
+  filter(metadata == 1)
+
+data_multi_omics.histology.n_samples <- data_multi_omics.histology %>% 
+  group_by(tissue) %>%
+  summarise(n_sample = n()) %>% 
+  arrange(n_sample) %>% 
+  mutate(tissue = factor(tissue, levels = tissue))
+  
+
+barplot_sample_size_histology <- ggplot(data_multi_omics.histology.n_samples, aes(x = tissue, y = n_sample)) + 
+  geom_bar(stat = "identity", fill = "grey70") +
+  geom_text(aes(label = n_sample), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type", 
+          subtitle = "Histology Analysis") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_multi_omics.histology.n_samples$n_sample) + 40))
+
+print(barplot_sample_size_histology)
+
+```
+
+
+```{r}
+tissues_to_keep <- gsub("-", " - ", expression.n_samples_per_tissue_filtered$tissue)
+
+data_multi_omics.histology.n_samples.filtered <- data_multi_omics.histology.n_samples %>% 
+  filter(tissue %in% tissues_to_keep)
+
+data_multi_omics.histology.n_samples.filtered$tissue <- factor(data_multi_omics.histology.n_samples.filtered$tissue, levels = data_multi_omics.histology.n_samples.filtered$tissue)
+
+barplot_sample_size_histology <- ggplot(data_multi_omics.histology.n_samples.filtered, aes(x = tissue, y = n_sample)) + 
+  geom_bar(stat = "identity", fill = "grey70") +
+  geom_text(aes(label = n_sample), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type", 
+          subtitle = "Histology Analysis") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_multi_omics.histology.n_samples$n_sample) + 40))
+
+print(barplot_sample_size_histology)
+
+```
+
+```{r}
+png(paste0(base_path, "barplot_sample_size_per_tissue_histology.png"), res = 300, h = 1200, w = 2000)
+barplot_sample_size_histology
+dev.off()
+```
+
+# Commom samples between gene expression and methylation
+
+```{r}
+
+data_multi_omics_exp_and_meth <- data_multi_omics %>% 
+  filter(gene_expression == 1 & metilation == 1) %>% 
+  group_by(tissue) %>% 
+  summarise(n_samples_exp_meth = n())
+
+
+
+meth_gene_expression_common_samples <- ggplot(data_multi_omics_exp_and_meth, aes(x = reorder(tissue, n_samples_exp_meth), y = n_samples_exp_meth)) + 
+  geom_bar(stat = "identity", fill = "tomato4") +
+  geom_text(aes(label = n_samples_exp_meth), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type",
+                  subtitle = "Common Samples") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_multi_omics_exp_and_meth$n_samples_exp_meth) + 20))
+
+print(meth_gene_expression_common_samples)
+
+```
+
+```{r}
+png(paste0(base_path, "meth_gene_expression_common_samples.png"), res = 300, h = 1200, w = 2000)
+meth_gene_expression_common_samples
+dev.off()
+```
+
+
+```{r}
+
+data_telemores$sample_id  <- gsub("-SM", "", data_telemores$CollaboratorSampleID)
+
+data_multi_omics_exp_and_meth_hist_tl <- data_multi_omics %>% 
+  filter(gene_expression == 1 & metilation == 1 & metadata  == 1) %>% 
+  merge(data_telemores, by = "sample_id") %>%
+  group_by(tissue) %>% 
+  summarise(n_samples_multi = n())
+
+
+
+common_samples <- ggplot(data_multi_omics_exp_and_meth_hist_tl, aes(x = reorder(tissue, n_samples_multi), y = n_samples_multi)) + 
+  geom_bar(stat = "identity", fill = "tomato4") +
+  geom_text(aes(label = n_samples_multi), hjust = -0.5, color = "black", size = 6) +
+  xlab(" ") + ylab("Number of Samples") + 
+  ggtitle("Number of Samples per Tissue Type",
+                  subtitle = "Common Samples Across 4 omics") +
+  theme_minimal() + 
+  theme(axis.text = element_text(color = "black", size = 12),
+        axis.title = element_text(color = "black", size = 14),
+        plot.title = element_text(color = "black", size = 16, face = "bold"),
+        plot.subtitle = element_text(color = "black", size = 14),
+        axis.line = element_line(color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  coord_flip() + 
+  ylim(c(0, max(data_multi_omics_exp_and_meth_hist_tl$n_samples_multi) + 20))
+
+print(common_samples)
+```
+
+
+```{r}
+png(paste0(base_path, "multi_common_samples.png"), res = 300, h = 1200, w = 2000)
+common_samples
+dev.off()
+
+```
+
+### Overlap between data types (all tissues, including those not used in this work)
+```{r}
+data_multi_omics_hist <- data_multi_omics %>% filter(metadata == 1)
+data_multi_omics_gexp <- data_multi_omics %>% filter(gene_expression == 1)
+data_multi_omics_met <- data_multi_omics %>% filter(metilation == 1)
+data_multi_omics_tl <- data_multi_omics %>% filter(telemore == 1)
+
+library(ggvenn)
+
+ggvenn(list("Histology" = data_multi_omics_hist$sample_id, 
+            "Gene expression" = data_multi_omics_gexp$sample_id, 
+            "DNA methylation" = data_multi_omics_met$sample_id, 
+            "Telemores" = data_multi_omics_tl$sample_id),
+       fill_color  = c("#7F7F7F", "#8C8CD4", "#66C2A5", "#FC8D62"))
+
+pdf("ggvenn.pdf")
+ggvenn(list("Histology" = data_multi_omics_hist$sample_id, 
+            "Gene expression" = data_multi_omics_gexp$sample_id, 
+            "DNA methylation" = data_multi_omics_met$sample_id, 
+            "Telemores" = data_multi_omics_tl$sample_id),
+       fill_color  = c("#7F7F7F", "#8C8CD4", "#66C2A5", "#FC8D62"))
+dev.off()
+```
+

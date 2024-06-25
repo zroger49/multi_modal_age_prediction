@@ -1,0 +1,35 @@
+# ---------------------
+# GLOBAL PARAMETERS
+# ---------------------
+
+# Put the name of the tissue you want (exactly as named in the GTEx Portal):
+TISSUE_TYPE: "Lung"
+
+# Define the place to store the images (do not replace the final "{}"):
+OUTPUT_DIR: "./data/images/GTEx/{}"
+
+# Device to run PyTorch processes:
+DEVICE: mps
+
+# ---------------------
+# DATASET PATHS
+# ---------------------
+
+# This is the csv that we can get from GTEx Portal with all Sample IDs and some of its attributes.
+PATH__GTExPortalDB: "./data/GTEx Portal.csv"
+
+# This csv should have two main columns, smoker_status and sample_id. Any other columns will be ignored.
+PATH__SmokerStatus:  "./data/smoking_annotation.csv"
+
+# This csv has only one column with the sample ids of the predefined test set.
+PATH_TestSample: "./data/test_subjects_{}.csv"
+
+# This csv has two columns: subject_id and age.
+PATH__DonorAge: "./data/donor_age.v2.csv"
+
+# csv with methylation data for multimodal approaches.
+PATH__Methylation: "./data/methylation"
+
+PATH__Histology: "./data/images/GTEx"
+
+PATH__GeneExpression: "./data/gene_expression"

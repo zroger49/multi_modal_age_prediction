@@ -1,0 +1,1304 @@
+# Predict age using the Hanmum model
+
+
+## Load libraries
+```{r}
+suppressPackageStartupMessages(library(tidyverse))
+library(readr)
+library(lmtest)
+library(data.table)
+library(impute)
+library(Metrics)
+library(MLmetrics)
+library(ggpubr)
+suppressPackageStartupMessages(library(meffonym))
+```
+
+```{r}
+safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
+                             "#44AA99", "#999933", "#882255", "#661100", "#6699CC", "#888888")
+
+```
+
+
+
+## Molecular clock
+```{r}
+datClock=read.csv("data/hanmum_probes.txt", sep = "\t")
+#annotation450KChip <- read.csv(file = "../../metadata/450KChip.csv")
+```
+
+## Lung
+
+### Load my data and data preparation
+```{r}
+# Load methylation data
+lung <- fread(file = "../../data/methylation_lung.csv")
+
+#Load metadata 
+age_data <- read.csv(file = "../../metadata/lung_annotation_meth.csv")
+lung_test_samples <- read.csv(file = "../../metadata/lung_test_metadata.csv")
+
+#Filter for samples with age data
+samples_with_age <- age_data %>% pull(Sample_ID)
+lung <- lung %>% 
+  select(probe, all_of(samples_with_age))
+
+```
+
+Keep only probes in the model
+
+```{r}
+lung <- lung %>% 
+  filter(probe %in% datClock$Marker)
+
+
+match1 <- match( datClock$Marker, lung$probe)
+sum(is.na(match1))
+```
+
+Due to missing probes we need to input them with NA values
+
+```{r}
+missing_probes <- datClock$Marker[is.na(match1)]
+missing_probes_data <- matrix(data = NA, nrow = length(missing_probes), ncol = ncol(lung))
+missing_probes_data[,1] <- missing_probes
+colnames(missing_probes_data) <-  colnames(lung)
+
+missing_probes_data <- as.data.frame(missing_probes_data)
+
+lung <- rbind(lung, missing_probes_data)
+lung <- lung %>% 
+  as_tibble() %>%
+  mutate_at(2:ncol(lung), as.numeric)
+  
+```
+
+```{r}
+print(dim(lung))
+```
+
+Sanity check for missing data
+
+```{r}
+
+match2 <- match(datClock$Marker , lung$probe)
+sum(is.na(match2))
+```
+
+### Script based on Horvath "step-wise analysis"
+
+#### STEP 1: DEFINE QUALITY METRICS
+
+
+```{r}
+
+meanMethBySample = as.numeric(apply(as.matrix(lung[,-1]),2,mean,na.rm=TRUE))
+minMethBySample = as.numeric(apply(as.matrix(lung[,-1]),2,min,na.rm=TRUE))
+maxMethBySample = as.numeric(apply(as.matrix(lung[,-1]),2,max,na.rm=TRUE))
+
+datMethUsed= t(lung[,-1])
+colnames(datMethUsed)=as.character(lung$probe)
+
+
+noMissingPerSample=apply(as.matrix(is.na(datMethUsed)),1,sum)
+table(noMissingPerSample)
+
+```
+
+#### STEP 2: Imputing 
+
+Run the following code if there is at least one missing
+
+```{r}
+if (max(noMissingPerSample,na.rm=TRUE)<3000 ){
+  if ( max(noMissingPerSample,na.rm=TRUE)>0 ){
+    dimnames1=dimnames(datMethUsed)
+    datMethUsed= data.frame(t(impute.knn(t(datMethUsed))$data))
+    dimnames(datMethUsed)=dimnames1
+  } # end of if
+} # end of if (! fastImputation )
+
+#Note There another faster imputation method in the script
+
+
+```
+
+#### Step 3: Split the data into train and test
+
+```{r}
+split_in_train_test <- function(meth, age_data, test_set) {
+  # Metadata
+  metadata_test <- age_data[age_data$tissue_sample_id %in% test_set$sample_id, ]
+  metadata_train <- age_data[!age_data$tissue_sample_id %in% test_set$sample_id, ]
+
+  # Age data
+  y_test <- metadata_test$AGE
+  y_train <- metadata_train$AGE
+
+  # Methylation data
+  X_train <- meth[metadata_train$Sample_ID, ]
+  X_test <- meth[metadata_test$Sample_ID, ]
+
+  return(list(X_train, X_test, y_train, y_test))
+}
+
+
+train_test <- split_in_train_test(datMethUsed, age_data, lung_test_samples)
+
+X_train <- train_test[[1]]
+X_test <- train_test[[2]]
+
+y_train <- train_test[[3]]
+y_test <- train_test[[4]]
+
+```
+
+#### STEP 4: Calibrate the model for another tissue using the train data and predict on the test data
+
+```{r}
+
+selectCpGsClock <- is.element(dimnames(datMethUsed)[[2]], as.character(datClock$Marker))
+
+## Train
+datMethClock0 <- data.frame(X_train[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_lung_train <- ret$score
+
+## Calibrate the model
+calibrated_model = lm(y_train ~ predictedAge_lung_train)
+
+
+## Test
+datMethClock0 <- data.frame(X_test[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_lung_test_uncalibrated <- ret$score
+
+predictedAge_lung_test <- predict(calibrated_model, data.frame(predictedAge_lung_train   = predictedAge_lung_test_uncalibrated))
+
+```
+
+#### Step 5: Compute accuracy metrics
+
+In train data
+
+```{r}
+
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_lung_train, y_train)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_lung_train, y_train)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_lung_train - y_train))
+
+# Compute correlation
+cor <- cor(predictedAge_lung_train, y_train)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_lung_train, y_train)
+
+metrics_hannum_lung_train <- c("Lung", "train", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_lung_train <- data.frame("predicted" = predictedAge_lung_train, "age" = y_train)
+
+
+a <- ggplot(results_lung_train, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=6, y=55, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age") +  # Label axes
+  ggtitle(paste0("Real Age vs. Predicted Age (Train set, n = ", nrow(results_lung_train),")")) +  # Add a title
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, max(results_lung_train$age)) +
+  ylim(0, max(results_lung_train$predicted))
+
+
+print(a)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_lung_train_real_vs_predicted.png", res = 300, w = 2000, h = 1500)
+a
+dev.off()
+```
+
+In test data before calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_lung_test_uncalibrated, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_lung_test_uncalibrated, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_lung_test_uncalibrated - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_lung_test_uncalibrated, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_lung_test_uncalibrated, y_test)
+
+metrics_hannum_lung_test <- c("Lung", "test_uncalibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_lung_test <- data.frame("predicted" = predictedAge_lung_test_uncalibrated, "age" = y_test)
+
+
+a <- ggplot(results_lung_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_lung_test),")")), 
+       subtitle = "Before calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+
+print(a)
+
+```
+
+In test data after calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_lung_test, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_lung_test, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_lung_test - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_lung_test, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_lung_test, y_test)
+
+metrics_hannum_lung_test_cal <- c("Lung", "test_calibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_lung_test <- data.frame("predicted" = predictedAge_lung_test, "age" = y_test)
+
+
+b <- ggplot(results_lung_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_lung_test),")")), 
+       subtitle = "After calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+print(b)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_lung_test_real_vs_predicted.png", res = 300, w = 3000, h = 1500)
+ggarrange(a, b)
+dev.off()
+```
+
+#### Save predictions
+```{r}
+dat_pred_train <- data.frame("Real" = y_train, "Pred" = predictedAge_lung_train)
+dat_pred <- data.frame("Real" = y_test, "Pred" = predictedAge_lung_test_uncalibrated, "Pred_cal" = predictedAge_lung_test)
+
+write.csv(dat_pred_train, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_lung_train_set_pred.csv", quote = F)
+write.csv(dat_pred, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_lung_test_set_pred.csv", quote = F)
+
+```
+
+
+
+## Colon - Transverse
+
+### Load my data and data preparation
+```{r}
+# Load methylation data
+colon <- fread(file = "../../data/methylation_colon.csv")
+
+#Load metadata 
+age_data <- read.csv(file = "../../metadata/colon_annotation_meth.csv")
+colon_test_samples <- read.csv(file = "../../metadata/colon_test_metadata.csv")
+
+#Filter for samples with age data
+samples_with_age <- age_data %>% pull(Sample_ID)
+colon <- colon %>% 
+  select(probe, all_of(samples_with_age))
+
+```
+
+Keep only probes in the model
+
+```{r}
+colon <- colon %>% 
+  filter(probe %in% datClock$Marker)
+
+
+match1 <- match(datClock$Marker , colon$probe)
+sum(is.na(match1))
+```
+
+Due to missing probes we need to input them with NA values
+
+```{r}
+missing_probes <- datClock$Marker[is.na(match1)]
+missing_probes_data <- matrix(data = NA, nrow = length(missing_probes), ncol = ncol(colon))
+missing_probes_data[,1] <- missing_probes
+colnames(missing_probes_data) <-  colnames(colon)
+
+missing_probes_data <- as.data.frame(missing_probes_data)
+
+colon <- rbind(colon, missing_probes_data)
+colon <- colon %>% 
+  as_tibble() %>%
+  mutate_at(2:ncol(colon), as.numeric)
+  
+```
+
+```{r}
+print(dim(colon))
+```
+
+Sanity check for missing data
+
+```{r}
+
+match2 <- match(datClock$Marker , colon$probe)
+sum(is.na(match2))
+```
+
+### Script based on Horvath "step-wise analysis"
+
+#### STEP 1: DEFINE QUALITY METRICS
+
+
+```{r}
+
+meanMethBySample = as.numeric(apply(as.matrix(colon[,-1]),2,mean,na.rm=TRUE))
+minMethBySample = as.numeric(apply(as.matrix(colon[,-1]),2,min,na.rm=TRUE))
+maxMethBySample = as.numeric(apply(as.matrix(colon[,-1]),2,max,na.rm=TRUE))
+
+datMethUsed= t(colon[,-1])
+colnames(datMethUsed)=as.character(colon$probe)
+
+
+noMissingPerSample=apply(as.matrix(is.na(datMethUsed)),1,sum)
+table(noMissingPerSample)
+
+```
+
+#### STEP 2: Imputing 
+
+Run the following code if there is at least one missing
+
+```{r}
+if (max(noMissingPerSample,na.rm=TRUE)<3000 ){
+  if ( max(noMissingPerSample,na.rm=TRUE)>0 ){
+    dimnames1=dimnames(datMethUsed)
+    datMethUsed= data.frame(t(impute.knn(t(datMethUsed))$data))
+    dimnames(datMethUsed)=dimnames1
+  } # end of if
+} # end of if (! fastImputation )
+
+#Note There another faster imputation method in the script
+
+
+```
+
+#### Step 3: Split the data into train and test
+
+```{r}
+split_in_train_test <- function(meth, age_data, test_set) {
+  # Metadata
+  metadata_test <- age_data[age_data$tissue_sample_id %in% test_set$sample_id, ]
+  metadata_train <- age_data[!age_data$tissue_sample_id %in% test_set$sample_id, ]
+
+  # Age data
+  y_test <- metadata_test$AGE
+  y_train <- metadata_train$AGE
+
+  # Methylation data
+  X_train <- meth[metadata_train$Sample_ID, ]
+  X_test <- meth[metadata_test$Sample_ID, ]
+
+  return(list(X_train, X_test, y_train, y_test))
+}
+
+
+train_test <- split_in_train_test(datMethUsed, age_data, colon_test_samples)
+
+X_train <- train_test[[1]]
+X_test <- train_test[[2]]
+
+y_train <- train_test[[3]]
+y_test <- train_test[[4]]
+
+```
+
+#### STEP 4: Calibrate the model for another tissue using the train data and predict on the test data
+
+```{r}
+
+selectCpGsClock <- is.element(dimnames(datMethUsed)[[2]], as.character(datClock$Marker))
+
+## Train
+datMethClock0 <- data.frame(X_train[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_colon_train <- ret$score
+
+## Calibrate the model
+calibrated_model = lm(y_train ~ predictedAge_colon_train)
+
+
+## Test
+datMethClock0 <- data.frame(X_test[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_colon_test_uncalibrated <- ret$score
+
+predictedAge_colon_test <- predict(calibrated_model, data.frame(predictedAge_colon_train   = predictedAge_colon_test_uncalibrated))
+
+```
+
+#### Step 5: Compute accuracy metrics
+
+In train data
+
+```{r}
+
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_colon_train, y_train)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_colon_train, y_train)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_colon_train - y_train))
+
+# Compute correlation
+cor <- cor(predictedAge_colon_train, y_train)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_colon_train, y_train)
+
+metrics_hannum_colon_train <- c("colon", "train", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_colon_train <- data.frame("predicted" = predictedAge_colon_train, "age" = y_train)
+
+
+a <- ggplot(results_colon_train, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=6, y=55, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age") +  # Label axes
+  ggtitle(paste0("Real Age vs. Predicted Age (Train set, n = ", nrow(results_colon_train),")")) +  # Add a title
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, max(results_colon_train$age)) +
+  ylim(0, max(results_colon_train$predicted))
+
+
+print(a)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures//2.epigenetic_clocks/2.hamnum_colon_train_real_vs_predicted.png", res = 300, w = 2000, h = 1500)
+a
+dev.off()
+```
+
+In test data before calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_colon_test_uncalibrated, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_colon_test_uncalibrated, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_colon_test_uncalibrated - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_colon_test_uncalibrated, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_colon_test_uncalibrated, y_test)
+
+metrics_hannum_colon_test <- c("colon", "test_uncalibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_colon_test <- data.frame("predicted" = predictedAge_colon_test_uncalibrated, "age" = y_test)
+
+
+a <- ggplot(results_colon_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_colon_test),")")), 
+       subtitle = "Before calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+
+print(a)
+
+```
+
+In test data after calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_colon_test, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_colon_test, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_colon_test - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_colon_test, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_colon_test, y_test)
+
+metrics_hannum_colon_test_cal <- c("colon", "test_calibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_colon_test <- data.frame("predicted" = predictedAge_colon_test, "age" = y_test)
+
+
+b <- ggplot(results_colon_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_colon_test),")")), 
+       subtitle = "After calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+print(b)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_colon_test_real_vs_predicted.png", res = 300, w = 3000, h = 1500)
+ggarrange(a, b)
+dev.off()
+```
+
+#### Save predictions
+```{r}
+dat_pred_train <- data.frame("Real" = y_train, "Pred" = predictedAge_colon_train)
+dat_pred <- data.frame("Real" = y_test, "Pred" = predictedAge_colon_test_uncalibrated, "Pred_cal" = predictedAge_colon_test)
+
+write.csv(dat_pred_train, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_colon_train_set_pred.csv", quote = F)
+write.csv(dat_pred, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_colon_test_set_pred.csv", quote = F)
+
+```
+
+
+
+## Ovary
+
+### Load my data and data preparation
+```{r}
+# Load methylation data
+ovary <- fread(file = "../../data/methylation_ovary.csv")
+
+#Load metadata 
+age_data <- read.csv(file = "../../metadata/ovary_annotation_meth.csv")
+ovary_test_samples <- read.csv(file = "../../metadata/ovary_test_metadata.csv")
+
+#Filter for samples with age data
+samples_with_age <- age_data %>% pull(Sample_ID)
+ovary <- ovary %>% 
+  select(probe, all_of(samples_with_age))
+
+```
+
+Keep only probes in the model
+
+```{r}
+ovary <- ovary %>% 
+  filter(probe %in% datClock$Marker)
+
+
+match1 <- match(datClock$Marker , ovary$probe)
+sum(is.na(match1))
+```
+
+Due to missing probes we need to input them with NA values
+
+```{r}
+missing_probes <- datClock$Marker[is.na(match1)]
+missing_probes_data <- matrix(data = NA, nrow = length(missing_probes), ncol = ncol(ovary))
+missing_probes_data[,1] <- missing_probes
+colnames(missing_probes_data) <-  colnames(ovary)
+
+missing_probes_data <- as.data.frame(missing_probes_data)
+
+ovary <- rbind(ovary, missing_probes_data)
+ovary <- ovary %>% 
+  as_tibble() %>%
+  mutate_at(2:ncol(ovary), as.numeric)
+  
+```
+
+```{r}
+print(dim(ovary))
+```
+
+Sanity check for missing data
+
+```{r}
+
+match2 <- match(datClock$Marker , ovary$probe)
+sum(is.na(match2))
+```
+
+### Script based on Horvath "step-wise analysis"
+
+#### STEP 1: DEFINE QUALITY METRICS
+
+
+```{r}
+
+meanMethBySample = as.numeric(apply(as.matrix(ovary[,-1]),2,mean,na.rm=TRUE))
+minMethBySample = as.numeric(apply(as.matrix(ovary[,-1]),2,min,na.rm=TRUE))
+maxMethBySample = as.numeric(apply(as.matrix(ovary[,-1]),2,max,na.rm=TRUE))
+
+datMethUsed= t(ovary[,-1])
+colnames(datMethUsed)=as.character(ovary$probe)
+
+
+noMissingPerSample=apply(as.matrix(is.na(datMethUsed)),1,sum)
+table(noMissingPerSample)
+
+```
+
+#### STEP 2: Imputing 
+
+Run the following code if there is at least one missing
+
+```{r}
+if (max(noMissingPerSample,na.rm=TRUE)<3000 ){
+  if ( max(noMissingPerSample,na.rm=TRUE)>0 ){
+    dimnames1=dimnames(datMethUsed)
+    datMethUsed= data.frame(t(impute.knn(t(datMethUsed))$data))
+    dimnames(datMethUsed)=dimnames1
+  } # end of if
+} # end of if (! fastImputation )
+
+#Note There another faster imputation method in the script
+
+
+```
+
+#### Step 3: Split the data into train and test
+
+```{r}
+split_in_train_test <- function(meth, age_data, test_set) {
+  # Metadata
+  metadata_test <- age_data[age_data$tissue_sample_id %in% test_set$sample_id, ]
+  metadata_train <- age_data[!age_data$tissue_sample_id %in% test_set$sample_id, ]
+
+  # Age data
+  y_test <- metadata_test$AGE
+  y_train <- metadata_train$AGE
+
+  # Methylation data
+  X_train <- meth[metadata_train$Sample_ID, ]
+  X_test <- meth[metadata_test$Sample_ID, ]
+
+  return(list(X_train, X_test, y_train, y_test))
+}
+
+
+train_test <- split_in_train_test(datMethUsed, age_data, ovary_test_samples)
+
+X_train <- train_test[[1]]
+X_test <- train_test[[2]]
+
+y_train <- train_test[[3]]
+y_test <- train_test[[4]]
+
+```
+
+#### STEP 4: Calibrate the model for another tissue using the train data and predict on the test data
+
+```{r}
+
+selectCpGsClock <- is.element(dimnames(datMethUsed)[[2]], as.character(datClock$Marker))
+
+## Train
+datMethClock0 <- data.frame(X_train[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_ovary_train <- ret$score
+
+## Calibrate the model
+calibrated_model = lm(y_train ~ predictedAge_ovary_train)
+
+
+## Test
+datMethClock0 <- data.frame(X_test[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_ovary_test_uncalibrated <- ret$score
+
+predictedAge_ovary_test <- predict(calibrated_model, data.frame(predictedAge_ovary_train   = predictedAge_ovary_test_uncalibrated))
+
+```
+
+#### Step 5: Compute accuracy metrics
+
+In train data
+
+```{r}
+
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_ovary_train, y_train)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_ovary_train, y_train)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_ovary_train - y_train))
+
+# Compute correlation
+cor <- cor(predictedAge_ovary_train, y_train)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_ovary_train, y_train)
+
+metrics_hannum_ovary_train <- c("ovary", "train", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_ovary_train <- data.frame("predicted" = predictedAge_ovary_train, "age" = y_train)
+
+
+a <- ggplot(results_ovary_train, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=6, y=55, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age") +  # Label axes
+  ggtitle(paste0("Real Age vs. Predicted Age (Train set, n = ", nrow(results_ovary_train),")")) +  # Add a title
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, max(results_ovary_train$age)) +
+  ylim(0, max(results_ovary_train$age))
+
+
+print(a)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures//2.epigenetic_clocks/2.hamnum_ovary_train_real_vs_predicted.png", res = 300, w = 2000, h = 1500)
+a
+dev.off()
+```
+
+In test data before calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_ovary_test_uncalibrated, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_ovary_test_uncalibrated, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_ovary_test_uncalibrated - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_ovary_test_uncalibrated, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_ovary_test_uncalibrated, y_test)
+
+metrics_hannum_ovary_test <- c("ovary", "test_uncalibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_ovary_test <- data.frame("predicted" = predictedAge_ovary_test_uncalibrated, "age" = y_test)
+
+
+a <- ggplot(results_ovary_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_ovary_test),")")), 
+       subtitle = "Before calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+
+print(a)
+
+```
+
+In test data after calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_ovary_test, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_ovary_test, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_ovary_test - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_ovary_test, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_ovary_test, y_test)
+
+metrics_hannum_ovary_test_cal <- c("ovary", "test_calibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_ovary_test <- data.frame("predicted" = predictedAge_ovary_test, "age" = y_test)
+
+
+b <- ggplot(results_ovary_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_ovary_test),")")), 
+       subtitle = "After calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+print(b)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_ovary_test_real_vs_predicted.png", res = 300, w = 3000, h = 1500)
+ggarrange(a, b)
+dev.off()
+```
+
+#### Save predictions
+```{r}
+dat_pred_train <- data.frame("Real" = y_train, "Pred" = predictedAge_ovary_train)
+dat_pred <- data.frame("Real" = y_test, "Pred" = predictedAge_ovary_test_uncalibrated, "Pred_cal" = predictedAge_ovary_test)
+
+write.csv(dat_pred_train, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_ovary_train_set_pred.csv", quote = F)
+write.csv(dat_pred, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_ovary_test_set_pred.csv", quote = F)
+
+```
+
+
+
+## Prostate
+
+### Load my data and data preparation
+```{r}
+# Load methylation data
+prostate <- fread(file = "../../data/methylation_prostate.csv")
+
+#Load metadata 
+age_data <- read.csv(file = "../../metadata/prostate_annotation_meth.csv")
+prostate_test_samples <- read.csv(file = "../../metadata/prostate_test_metadata.csv")
+
+#Filter for samples with age data
+samples_with_age <- age_data %>% pull(Sample_ID)
+prostate <- prostate %>% 
+  select(probe, all_of(samples_with_age))
+
+```
+
+Keep only probes in the model
+
+```{r}
+prostate <- prostate %>% 
+  filter(probe %in% datClock$Marker)
+
+
+match1 <- match(datClock$Marker , prostate$probe)
+sum(is.na(match1))
+```
+
+Due to missing probes we need to input them with NA values
+
+```{r}
+missing_probes <- datClock$Marker[is.na(match1)]
+missing_probes_data <- matrix(data = NA, nrow = length(missing_probes), ncol = ncol(prostate))
+missing_probes_data[,1] <- missing_probes
+colnames(missing_probes_data) <-  colnames(prostate)
+
+missing_probes_data <- as.data.frame(missing_probes_data)
+
+prostate <- rbind(prostate, missing_probes_data)
+prostate <- prostate %>% 
+  as_tibble() %>%
+  mutate_at(2:ncol(prostate), as.numeric)
+  
+```
+
+```{r}
+print(dim(prostate))
+```
+
+Sanity check for missing data
+
+```{r}
+
+match2 <- match(datClock$Marker , prostate$probe)
+sum(is.na(match2))
+```
+
+### Script based on Horvath "step-wise analysis"
+
+#### STEP 1: DEFINE QUALITY METRICS
+
+
+```{r}
+
+meanMethBySample = as.numeric(apply(as.matrix(prostate[,-1]),2,mean,na.rm=TRUE))
+minMethBySample = as.numeric(apply(as.matrix(prostate[,-1]),2,min,na.rm=TRUE))
+maxMethBySample = as.numeric(apply(as.matrix(prostate[,-1]),2,max,na.rm=TRUE))
+
+datMethUsed= t(prostate[,-1])
+colnames(datMethUsed)=as.character(prostate$probe)
+
+
+noMissingPerSample=apply(as.matrix(is.na(datMethUsed)),1,sum)
+table(noMissingPerSample)
+
+```
+
+#### STEP 2: Imputing 
+
+Run the following code if there is at least one missing
+
+```{r}
+if (max(noMissingPerSample,na.rm=TRUE)<3000 ){
+  if ( max(noMissingPerSample,na.rm=TRUE)>0 ){
+    dimnames1=dimnames(datMethUsed)
+    datMethUsed= data.frame(t(impute.knn(t(datMethUsed))$data))
+    dimnames(datMethUsed)=dimnames1
+  } # end of if
+} # end of if (! fastImputation )
+
+#Note There another faster imputation method in the script
+
+
+```
+
+#### Step 3: Split the data into train and test
+
+```{r}
+split_in_train_test <- function(meth, age_data, test_set) {
+  # Metadata
+  metadata_test <- age_data[age_data$tissue_sample_id %in% test_set$sample_id, ]
+  metadata_train <- age_data[!age_data$tissue_sample_id %in% test_set$sample_id, ]
+
+  # Age data
+  y_test <- metadata_test$AGE
+  y_train <- metadata_train$AGE
+
+  # Methylation data
+  X_train <- meth[metadata_train$Sample_ID, ]
+  X_test <- meth[metadata_test$Sample_ID, ]
+
+  return(list(X_train, X_test, y_train, y_test))
+}
+
+
+train_test <- split_in_train_test(datMethUsed, age_data, prostate_test_samples)
+
+X_train <- train_test[[1]]
+X_test <- train_test[[2]]
+
+y_train <- train_test[[3]]
+y_test <- train_test[[4]]
+
+```
+
+#### STEP 4: Calibrate the model for another tissue using the train data and predict on the test data
+
+```{r}
+
+selectCpGsClock <- is.element(dimnames(datMethUsed)[[2]], as.character(datClock$Marker))
+
+## Train
+datMethClock0 <- data.frame(X_train[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_prostate_train <- ret$score
+
+## Calibrate the model
+calibrated_model = lm(y_train ~ predictedAge_prostate_train)
+
+
+## Test
+datMethClock0 <- data.frame(X_test[,selectCpGsClock])
+datMethClock <-  data.frame(datMethClock0[, as.character(datClock$Marker)])
+ret <- meffonym.score(as.matrix(t(datMethClock)), "hannum")
+predictedAge_prostate_test_uncalibrated <- ret$score
+
+predictedAge_prostate_test <- predict(calibrated_model, data.frame(predictedAge_prostate_train   = predictedAge_prostate_test_uncalibrated))
+
+```
+
+#### Step 5: Compute accuracy metrics
+
+In train data
+
+```{r}
+
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_prostate_train, y_train)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_prostate_train, y_train)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_prostate_train - y_train))
+
+# Compute correlation
+cor <- cor(predictedAge_prostate_train, y_train)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_prostate_train, y_train)
+
+metrics_hannum_prostate_train <- c("prostate", "train", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_prostate_train <- data.frame("predicted" = predictedAge_prostate_train, "age" = y_train)
+
+
+a <- ggplot(results_prostate_train, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=6, y=55, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age") +  # Label axes
+  ggtitle(paste0("Real Age vs. Predicted Age (Train set, n = ", nrow(results_prostate_train),")")) +  # Add a title
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, max(results_prostate_train$age)) +
+  ylim(0, max(results_prostate_train$age))
+
+
+print(a)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_prostate_train_real_vs_predicted.png", res = 300, w = 2000, h = 1500)
+a
+dev.off()
+```
+
+In test data before calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_prostate_test_uncalibrated, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_prostate_test_uncalibrated, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_prostate_test_uncalibrated - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_prostate_test_uncalibrated, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_prostate_test_uncalibrated, y_test)
+
+metrics_hannum_prostate_test <- c("prostate", "test_uncalibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_prostate_test <- data.frame("predicted" = predictedAge_prostate_test_uncalibrated, "age" = y_test)
+
+
+a <- ggplot(results_prostate_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_prostate_test),")")), 
+       subtitle = "Before calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+
+print(a)
+
+```
+
+In test data after calibration
+
+```{r}
+# Calculate Mean Absolute Error (MAE)
+mae_value <- mae(predictedAge_prostate_test, y_test)
+
+# Calculate Mean Squared Error (MSE)
+mse_value <- mse(predictedAge_prostate_test, y_test)
+
+# Calculate Root Mean Squared Error (RMSE)
+rmse_value <- sqrt(mse_value)
+
+# Calculate median absolute error
+med <- median(abs(predictedAge_prostate_test - y_test))
+
+# Compute correlation
+cor <- cor(predictedAge_prostate_test, y_test)
+
+# Calculate R-squared (R²)
+rsquared_value <- R2_Score(predictedAge_prostate_test, y_test)
+
+metrics_hannum_prostate_test_cal <- c("prostate", "test_calibrated", mae_value, med, rmse_value, rsquared_value, cor)
+
+# Plot results
+results_prostate_test <- data.frame("predicted" = predictedAge_prostate_test, "age" = y_test)
+
+
+b <- ggplot(results_prostate_test, aes(x = age, y = predicted)) +
+  geom_point() +  # Add scatter points
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +  # Add a 45-degree line
+  #annotate(paste("MAE =", round(mae_value, 2), "\n", "RMSE =", round(rmse_value, 2))) + 
+  annotate("text", x=10, y=60, label = paste("MAE =", round(mae_value, 2), "\n", "MED =", round(med, 2), "\nRMSE =", round(rmse_value, 2), "\nR2 =", round(rsquared_value, 2), "\ncor =", round(cor,2))) + 
+  labs(x = "Real Age", y = "Predicted Age", 
+       title = (paste0("Real Age vs. Predicted Age (Test set, n = ", nrow(results_prostate_test),")")), 
+       subtitle = "After calibration") +
+  theme_classic() + 
+  theme(axis.text = element_text(size = 14), 
+        axis.title = element_text(size = 18)) + 
+  xlim(0, 80) +
+  ylim(0, 80)
+
+
+print(b)
+
+# Create a scatter plot of real age vs. predicted age
+png("../../aging_notes/figures/2.epigenetic_clocks/2.hamnum_prostate_test_real_vs_predicted.png", res = 300, w = 3000, h = 1500)
+ggarrange(a, b)
+dev.off()
+```
+
+#### Save predictions
+```{r}
+dat_pred_train <- data.frame("Real" = y_train, "Pred" = predictedAge_prostate_train)
+dat_pred <- data.frame("Real" = y_test, "Pred" = predictedAge_prostate_test_uncalibrated, "Pred_cal" = predictedAge_prostate_test)
+
+write.csv(dat_pred_train, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_prostate_train_set_pred.csv", quote = F)
+write.csv(dat_pred, file = "../../results/2.epigenetic_clocks/Hannum/2.Hannum_prostate_test_set_pred.csv", quote = F)
+
+```
+
+## Save results
+
+```{r}
+res_hannum_clock <- data.frame("A" = metrics_hannum_lung_train, 
+                          "B" = metrics_hannum_lung_test_cal, 
+                          "C" = metrics_hannum_colon_train, 
+                          "D" = metrics_hannum_colon_test_cal,
+                          E = metrics_hannum_ovary_train, 
+                          "F" = metrics_hannum_ovary_test_cal, 
+                          "G" = metrics_hannum_prostate_train, 
+                          "AA" = metrics_hannum_prostate_test_cal
+                          )
+
+
+res_hannum_clock <- t(res_hannum_clock)
+res_hannum_clock <- data.frame(res_hannum_clock)
+row.names(res_hannum_clock) <- NULL
+colnames(res_hannum_clock) <- c("Tissue", "Dataset", "MAE", "MED", "RMSE", "R", "cor")
+
+
+write.csv(res_hannum_clock, "../../results/2.epigenetic_clocks/Hannum/metrics.csv")
+```
+
+

@@ -1,0 +1,90 @@
+# ---------------------
+# MODEL PARAMETERS
+# ---------------------
+
+normalize_opt:
+  - false
+  - false 
+
+reweight_opt:
+  - sqrt_inv
+  - sqrt_inv
+
+lds:
+ - true
+ - true
+
+lds_kernel:
+ - gaussian
+ - gaussian
+ #- triang
+ #- laplacian
+
+# Int Values
+lds_ks:
+  min: 2
+  max: 8 #8
+
+# Int Values
+lds_sigma:
+  min: 1 # 1
+  max: 5
+
+custom_loss:
+  #- mse_loss
+  - weighted_mse_loss
+  #- weighted_focal_mse_loss
+  - weighted_focal_mse_loss
+
+hipt_features:
+  - features_mean256_cls4k
+  - features_mean256_cls4k
+  #- features_mean256
+  #- features_cls4k
+
+optimizer_opt:
+  - Adam
+  - Adam
+  #- SGD
+
+learning_rate:
+  min: 0.00001
+  max: 0.00002
+
+n_layers:
+  min: 3
+  max: 4
+
+# Range of powers of 2
+n_nodes:
+  min: 6
+  max: 9
+  keep_cte: false
+
+dropout_rate:
+  min: 0.25
+  max: 0.4
+
+# Range of powers of 2
+n_epochs:
+  min: 10
+  max: 11
+  keep_cte: false
+
+# Range of powers of 2
+batch:
+  min: 5
+  max: 7
+  keep_cte: false
+
+n_feat_meth: 256
+
+n_feat_gene: 128
+
+feat_select_meth:
+  - LIN
+  - LIN
+
+feat_select_gene:
+  - DEG
+  - DEG
