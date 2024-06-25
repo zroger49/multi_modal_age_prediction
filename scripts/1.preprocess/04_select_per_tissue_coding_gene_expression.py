@@ -1,6 +1,6 @@
 import os
 
-from load_and_process_metadata_gtex import load_and_process_metadata_gtex
+from load_and_process_metadata_gtex import load_and_process_metadata
 from process_rna_data import load_and_process_coding_gene_expression_data
 
 metadata = load_and_process_metadata("../data/metadata/gtex_v8_metadata_full.tab")

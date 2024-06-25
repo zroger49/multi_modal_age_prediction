@@ -8,6 +8,7 @@ Pre-process the metadata
     - Process metadata from each tissue (01_process_metadata_table.R)
     - Plot sample size (02_plot_sample_size.Rmd)
     - Split data into train and test data (03_train_test_split.ipynb)
+    - Process RNA seq data (04_select_per_tissue_coding_gene_expression.py)
 
 ### Aging clocks
 
